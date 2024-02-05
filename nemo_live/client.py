@@ -1,4 +1,3 @@
-import librosa
 import logging
 import pyaudio
 
@@ -16,6 +15,7 @@ class Client:
         self.uid = str(uuid.uuid4())
         self.last_response_recieved = None
         self.server_timeout_seconds = 10
+        self.last_chunk_samples = 32000
 
         socket_url = f"ws://{host}:{port}"
         self.client_socket = websocket.WebSocketApp(
@@ -30,10 +30,10 @@ class Client:
         self.ws_thread.setDaemon(True)
         self.ws_thread.start()
 
-        logging.info("connecting to server")
+        logging.info("Connecting to server")
         while not self.recording:
-            time.sleep(.5)
-        logging.info("connected to server")
+            time.sleep(.1)
+        logging.info("Connected to server")
 
     def on_message(self, ws, message):
         self.last_response_recieved = time.time()
@@ -48,7 +48,10 @@ class Client:
             return
 
         self.recording = True
-        text = message.get("text", "")
+        if "text" not in message:
+            return
+
+        text = message["text"]
 
         print(f"text: {text}")
 
@@ -66,6 +69,7 @@ class Client:
         self.ws_thread.join()
 
     def transcribe_from_audio_file(self, filename, simulate_streaming=True):
+        import librosa
         audio, sr = librosa.load(filename, sr=16000)
         audio = (audio * 32768).astype(np.int16)
         if simulate_streaming:
@@ -73,9 +77,10 @@ class Client:
                 assert self.recording
                 audio_chunk = audio[i:i+self.chunk]
                 self.send_packet_to_server(audio_chunk.tobytes())
-                time.sleep(self.chunk / sr)
+                time.sleep(.1)
         else:
             self.send_packet_to_server(audio.tobytes())
+        self.send_packet_to_server(self.last_chunk_samples * 2 * b"\x00")
 
         assert self.last_response_recieved
         while time.time() - self.last_response_recieved < self.server_timeout_seconds:
@@ -95,8 +100,7 @@ class Client:
         try:
             while self.recording:
                 data = stream.read(self.chunk, exception_on_overflow = False)
-                data = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
-                self.send_packet_to_server(data.tobytes())
+                self.send_packet_to_server(data)
         except KeyboardInterrupt:
             stream.stop_stream()
             stream.close()

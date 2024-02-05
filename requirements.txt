@@ -1,0 +1,9 @@
+deepmultilingualpunctuation==1.0.1
+librosa==0.10.0
+numpy==1.23.5
+omegaconf==2.3.0
+PyAudio==0.2.14
+torch==2.1.2
+websocket_client==1.7.0
+websockets==12.0
+Cython==0.29.37

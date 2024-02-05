@@ -6,10 +6,39 @@ import time
 logging.basicConfig(level=logging.INFO)
 
 import numpy as np
-import torch
+from deepmultilingualpunctuation import PunctuationModel
 from websockets.sync.server import serve
 
 from nemo_live.transcriber import NeMoTranscriber as Transcriber
+
+
+class Transcription:
+    model = PunctuationModel()
+    punc_every_n_words = 10
+
+    def __init__(self):
+        self.prev_punc_raw_text_len = 0
+        self.prev_punc_text = ""
+        self._text = ""
+        self.raw_text = ""
+
+    def update(self, raw_text, force_punc=False):
+        text_new = raw_text[self.prev_punc_raw_text_len :]
+
+        if len(text_new.strip().split()) > self.punc_every_n_words or force_punc:
+            if raw_text != "":
+                self._text = Transcription.model.restore_punctuation(raw_text)[:-1]
+            self.prev_punc_raw_text_len = len(raw_text)
+            self.prev_punc_text = self._text
+            self.no_punc_for_n_silence = 0
+        else:
+            self._text = self.prev_punc_text + text_new
+        self.raw_text = raw_text
+        return self._text
+
+    @property
+    def text(self):
+        return self._text
 
 
 class TranscriptionServer:
@@ -81,7 +110,6 @@ class TranscriptionServer:
 
 class ServeClient(object):
     RATE = 16000
-    SERVER_READY = "SERVER_READY"
     DISCONNECT = "DISCONNECT"
 
     def __init__(self, websocket, client_uid):
@@ -89,19 +117,14 @@ class ServeClient(object):
         self.client_uid = client_uid
         self.frames_np = None
         self.exit = False
+        self.transcription = Transcription()
+        self.silence = 0
+        self.force_punc_silence_samples = Transcriber.sample_rate * 2
 
         # threading
         self.trans_thread = threading.Thread(target=self.speech_to_text)
         self.trans_thread.start()
-        self.websocket.send(
-            json.dumps(
-                {
-                    "uid": self.client_uid,
-                    "status": "OK",
-                    # "message": self.SERVER_READY,
-                }
-            )
-        )
+        self.websocket.send(json.dumps({"uid": self.client_uid, "status": "OK",}))
 
         # threading
         self.lock = threading.Lock()
@@ -132,12 +155,27 @@ class ServeClient(object):
             with self.lock:
                 self.frames_np = self.frames_np[Transcriber.chunk_size_samples :]
 
-            text, states = Transcriber.transcribe_chunk(chunk, states)
-            if not len(text):
+            raw_text, states = Transcriber.transcribe_chunk(chunk, states)
+            if not raw_text:
                 continue
+
+            if raw_text == self.transcription.raw_text:
+                if self.silence != -1:
+                    self.silence += len(chunk)
+                if self.silence > self.force_punc_silence_samples:
+                    self.transcription.update(raw_text, force_punc=True)
+                    self.silence = -1
+                else:
+                    continue
+            else:
+                self.silence = 0
+                self.transcription.update(raw_text)
+
             try:
                 self.websocket.send(
-                    json.dumps({"uid": self.client_uid, "status": "OK", "text": text})
+                    json.dumps(
+                        {"uid": self.client_uid, "status": "OK", "text": self.transcription.text}
+                    )
                 )
             except Exception as e:
                 logging.error(f"[ERROR]: Failed to send message to client: {e}")
@@ -147,4 +185,3 @@ class ServeClient(object):
 
     def cleanup(self):
         self.exit = True
-
