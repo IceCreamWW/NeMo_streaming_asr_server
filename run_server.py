@@ -4,9 +4,7 @@ from nemo_live.server import TranscriptionServer
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--port", "-p", type=int, default=8000, help="Websocket port to run the server on."
-    )
+    parser.add_argument("--port", "-p", type=int, default=9000) 
     args = parser.parse_args()
 
     server = TranscriptionServer()
